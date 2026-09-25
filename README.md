@@ -88,7 +88,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `POST` | `/digests/{id}/orfs` | 只读检索开放阅读框：基于已保存记录的原始 IUPAC 序列与拓扑（不依赖酶切片段），正链与反向互补链分别逐碱基寻找字面量 ATG，从各起点按三联体读取到同框第一个字面量 TAA/TAG/TGA 形成 ORF，简并密码子不充当起止信号，线性不越界、环形可跨原点但完整 ORF（含终止）不超过一圈，保留满足最短氨基酸数（不含终止）的全部嵌套 ORF，返回链方向、原始正链坐标、跨原点标记、定向核苷酸序列与氨基酸长度（不落库，记录不存在返回 404，参数非法返回 422，无结果返回空数组） |
 | `POST` | `/gel-comparisons` | 只读比较 2~8 条已保存记录的凝胶条带：汇总片段长度按降序聚类（条带内 `(max-min)/max <= resolution_ratio`），返回条带长度范围、各泳道片段数、总碱基数与诊断条带（不落库，记录不存在返回 404） |
 | `POST` | `/ligation-compatibility` | 只读枚举 2~8 条已保存记录之间可连接的片段末端对：黏端要求一方 5' 突出端序列等于另一方 3' 突出端序列的反向互补，平端仅与平端兼容（可通过 `include_blunt` 关闭），返回按记录/片段/端方向稳定排序的配对、兼容类型、连接后突出端与总数（不落库，记录不存在返回 404） |
-| `POST` | `/ligation-assembly` | 只读规划 2~8 条已保存记录之间的最长片段拼接链：复用末端反向互补兼容判定构建有向图，搜索不重复使用记录的最长线性链（每条记录最多贡献一个片段，可正向/反向摆入，`max_chain_length` 限制链上节点数），同长度方案按记录请求顺序、片段索引与端方向稳定择优，返回节点端点、连接类型/突出端、总连接数与未能延伸的原因（不落库，记录不存在返回 404，候选片段过多返回 422） |
+| `POST` | `/ligation-assembly` | 只读规划 2~8 条已保存记录之间的最长片段拼接链：复用末端反向互补兼容判定构建有向图，搜索不重复使用记录的最长线性链（每条记录最多贡献一个片段，可正向/反向摆入；反向节点的突出端按 IUPAC 反向互补换算后再判定，`5'`/`3'` 极性保持不变，`max_chain_length` 限制链上节点数），同长度方案按记录请求顺序、片段索引与端方向稳定择优，返回节点端点（端标识保留原片段 left/right，突出端为换算后的朝向端）、连接类型/突出端、总连接数与未能延伸的原因（不落库，记录不存在返回 404，候选片段过多返回 422） |
 | `POST` | `/gc-content` | 只读对提交的 IUPAC 序列按固定窗口计算 GC 含量范围：每窗口返回确定碱基贡献的最低/最高 GC 计数与百分比，简并符号按其可能碱基分别计入上/下界；窗口短于序列时按指定步长滑动，环形窗口可跨越末尾回到开头且每个窗口最多覆盖一圈（不落库，不依赖已保存记录） |
 | `POST` | `/digest-identification` | 只读从未知样本的观测片段长度识别 1~8 条已保存记录：观测与预期片段一对一配对、长度差不超过整数 bp 容差，先最大化配对数再最小化差值总和，同分配对按索引字典序固定；候选按未配对总数、差值总和、请求 ID 顺序排序，最优分数并列标记歧义，无候选满足最大未配对数时返回无命中（不落库） |
 | `GET` | `/health` | 健康检查 |
@@ -946,9 +946,11 @@ curl -X POST http://localhost:8000/ligation-assembly \
 
 ### 响应
 
-以下示例为三条记录：`id=1` 单切口产生 5' 突出端 `AAGT`（f0 右端）；`id=2`
+以下示例为三条记录：`id=1` 单切口产生 5' 突出端 `AAGT`（f1 左端）；`id=2`
 含两个切口，中间片段 f1 左端为 5' `AAGT`、右端为 3' `ACTT`，可作桥接；
-`id=3` 单切口产生 3' 突出端 `ACTT`（与 5' `AAGT` 反向互补）：
+`id=3` 单切口产生 3' 突出端 `ACTT`（与 5' `AAGT` 反向互补）。三条记录的
+片段均反向摆入：反向节点的突出端按 IUPAC 反向互补换算（`AAGT→ACTT`、
+`ACTT→AAGT`），极性 5'/3' 保持不变：
 
 ```json
 {
@@ -959,35 +961,35 @@ curl -X POST http://localhost:8000/ligation-assembly \
   "node_count": 3,
   "connection_count": 2,
   "nodes": [
-    {"digest_id": 1, "fragment_index": 0, "orientation": "forward",
-     "left_end":  {"digest_id": 1, "fragment_index": 0, "end": "left",
+    {"digest_id": 1, "fragment_index": 1, "orientation": "reverse",
+     "left_end":  {"digest_id": 1, "fragment_index": 1, "end": "right",
                    "end_type": "none", "overhang": ""},
-     "right_end": {"digest_id": 1, "fragment_index": 0, "end": "right",
-                   "end_type": "5prime", "overhang": "AAGT"}},
+     "right_end": {"digest_id": 1, "fragment_index": 1, "end": "left",
+                   "end_type": "5prime", "overhang": "ACTT"}},
     {"digest_id": 2, "fragment_index": 1, "orientation": "reverse",
      "left_end":  {"digest_id": 2, "fragment_index": 1, "end": "right",
-                   "end_type": "3prime", "overhang": "ACTT"},
+                   "end_type": "3prime", "overhang": "AAGT"},
      "right_end": {"digest_id": 2, "fragment_index": 1, "end": "left",
-                   "end_type": "5prime", "overhang": "AAGT"}},
+                   "end_type": "5prime", "overhang": "ACTT"}},
     {"digest_id": 3, "fragment_index": 0, "orientation": "reverse",
      "left_end":  {"digest_id": 3, "fragment_index": 0, "end": "right",
-                   "end_type": "3prime", "overhang": "ACTT"},
+                   "end_type": "3prime", "overhang": "AAGT"},
      "right_end": {"digest_id": 3, "fragment_index": 0, "end": "left",
                    "end_type": "none", "overhang": ""}}
   ],
   "connections": [
     {"index": 0,
-     "from_end": {"digest_id": 1, "fragment_index": 0, "end": "right",
-                  "end_type": "5prime", "overhang": "AAGT"},
+     "from_end": {"digest_id": 1, "fragment_index": 1, "end": "left",
+                  "end_type": "5prime", "overhang": "ACTT"},
      "to_end":   {"digest_id": 2, "fragment_index": 1, "end": "right",
-                  "end_type": "3prime", "overhang": "ACTT"},
-     "compatibility": "sticky", "ligated_overhang": "AAGT"},
+                  "end_type": "3prime", "overhang": "AAGT"},
+     "compatibility": "sticky", "ligated_overhang": "ACTT"},
     {"index": 1,
      "from_end": {"digest_id": 2, "fragment_index": 1, "end": "left",
-                  "end_type": "5prime", "overhang": "AAGT"},
+                  "end_type": "5prime", "overhang": "ACTT"},
      "to_end":   {"digest_id": 3, "fragment_index": 0, "end": "right",
-                  "end_type": "3prime", "overhang": "ACTT"},
-     "compatibility": "sticky", "ligated_overhang": "AAGT"}
+                  "end_type": "3prime", "overhang": "AAGT"},
+     "compatibility": "sticky", "ligated_overhang": "ACTT"}
   ],
   "used_digest_ids": [1, 2, 3],
   "unused_digest_ids": [],
@@ -1001,12 +1003,16 @@ curl -X POST http://localhost:8000/ligation-assembly \
   - `orientation` 为 `forward`（按原片段 left→right 摆入）或 `reverse`
     （翻转摆入）；
   - `left_end` / `right_end` 为该节点在**拼接链上**的左/右端点，其中 `end`
-    标明该端取自**原片段**的 `left` 还是 `right`（翻转时二者相反）；天然末端
-    `none` 只可能出现在整条链的两个最外端。
+    标明该端取自**原片段**的 `left` 还是 `right`（翻转时二者相反）；
+    `end_type` / `overhang` 是该端按链上朝向参与连接时的取值——翻转节点的
+    突出端为原片段序列的 IUPAC 反向互补（5'/3' 极性是切割几何属性，不随
+    翻转改变；平端/天然末端无突出端，换算后不变），正向节点则与原片段
+    完全一致；天然末端 `none` 只可能出现在整条链的两个最外端。
 - `connections[]`：相邻节点间的连接，`index` 从 0 起；`from_end` 恒为左侧
-  节点的出端、`to_end` 恒为右侧节点的入端，二者来自不同记录；
-  `compatibility` / `ligated_overhang` 的含义与 `/ligation-compatibility`
-  完全一致（黏端取接头处退火的 5' 突出端；平端为空字符串）。
+  节点的出端、`to_end` 恒为右侧节点的入端（均为上述换算后的朝向端），二者
+  来自不同记录；`compatibility` / `ligated_overhang` 的含义与
+  `/ligation-compatibility` 完全一致（黏端取接头处退火的 5' 突出端；平端为
+  空字符串）。
 - `used_digest_ids` / `unused_digest_ids`：入选 / 未入选链的记录 id，均按
   请求顺序排列。
 

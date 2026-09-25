@@ -7,10 +7,18 @@
   或翻转方向（``right→left``）摆入链中；
 * **有向图**：节点 = （记录请求位置, 片段索引, 摆放方向），共 2 × 片段数个；
   每个节点有一个朝链右的"出端"（正向取片段右端、反向取片段左端）与一个
-  朝链左的"入端"（正向取片段左端、反向取片段右端）；边 u→v 存在当且仅当
-  u、v 来自**不同记录**且 u 的出端与 v 的入端通过
+  朝链左的"入端"（正向取片段左端、反向取片段右端）；
+* **反向摆放的末端换算**：片段翻转后左/右端互换，接头处的突出端按链向
+  5'→3' 重新读数——反向节点的每个朝向端取原片段末端突出端的 IUPAC
+  反向互补序列（``5prime``/``3prime`` 极性是切割几何属性，保持不变；
+  平端与天然末端无突出端，换算后不变）。换算只作用于反向节点：正向
+  节点的朝向端与原片段末端完全一致；端的对外标识仍保留其在**原片段**
+  上的 left/right；
+* 边 u→v 存在当且仅当 u、v 来自**不同记录**且 u 的出端与 v 的入端
+  （均为上述换算后的朝向端）通过
   :func:`app.ligation.match_ends` 判定兼容（黏端反向互补 / 平端，
-  ``include_blunt`` 可关闭平端）；
+  ``include_blunt`` 可关闭平端）；链搜索、连接回显与同长择优全部使用
+  换算后的朝向端；
 * 在图上搜索**节点数最多的简单路径**（记录不重复使用——同记录节点间
   本就不设边，搜索中再以未用记录集合保证不重复），节点数受请求
   ``max_chain_length`` 限制；
@@ -28,6 +36,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from .iupac import reverse_complement
 from .ligation import match_ends
 
 # 参与规划的全部记录片段总数上限（每个可连接片段展开为 fwd/rev 两个图节点）：
@@ -36,10 +45,11 @@ from .ligation import match_ends
 MAX_ASSEMBLY_FRAGMENTS = 64
 
 # 摆放方向：链左端所用的原片段端（left < right 即稳定择优的端方向次序）
+# flip_overhang：反向摆放时突出端是否按 IUPAC 反向互补换算
 _ORIENTATIONS = (
-    # orientation, 入端(链左)取原片段, 出端(链右)取原片段, 端方向次序
-    ("forward", "left", "right", 0),
-    ("reverse", "right", "left", 1),
+    # orientation, 入端(链左)取原片段, 出端(链右)取原片段, 端方向次序, 换算突出端
+    ("forward", "left", "right", 0, False),
+    ("reverse", "right", "left", 1, True),
 )
 
 # 未能延伸 / 无方案的原因代码
@@ -74,7 +84,9 @@ def _candidate_nodes(record_position: int, digest_id: int, fragments) -> list[di
 
     两端均为天然末端（``none``）的片段不可能参与任何连接，直接排除；
     其余片段展开为正向/反向两个节点，按择优键
-    （片段索引, 端方向 left<right）排序返回。
+    （片段索引, 端方向 left<right）排序返回。反向节点的朝向端突出端
+    取原片段末端序列的 IUPAC 反向互补，``5prime``/``3prime`` 极性
+    （切割几何属性）保持不变；端的 fragment_end 仍标明原片段端。
     """
     nodes = []
     for fragment in fragments:
@@ -82,9 +94,10 @@ def _candidate_nodes(record_position: int, digest_id: int, fragments) -> list[di
         right = fragment["right_end"]
         if left["type"] == "none" and right["type"] == "none":
             continue
-        for orientation, in_end_name, out_end_name, direction_rank in _ORIENTATIONS:
-            in_end = fragment[f"{in_end_name}_end"]
-            out_end = fragment[f"{out_end_name}_end"]
+        for (
+            orientation, in_end_name, out_end_name,
+            direction_rank, flip_overhang,
+        ) in _ORIENTATIONS:
             nodes.append(
                 {
                     "record_position": record_position,
@@ -92,16 +105,12 @@ def _candidate_nodes(record_position: int, digest_id: int, fragments) -> list[di
                     "fragment_index": fragment["index"],
                     "orientation": orientation,
                     "direction_rank": direction_rank,
-                    "in_end": {
-                        "fragment_end": in_end_name,
-                        "end_type": in_end["type"],
-                        "overhang": in_end["overhang"],
-                    },
-                    "out_end": {
-                        "fragment_end": out_end_name,
-                        "end_type": out_end["type"],
-                        "overhang": out_end["overhang"],
-                    },
+                    "in_end": _oriented_end(
+                        fragment, in_end_name, flip_overhang
+                    ),
+                    "out_end": _oriented_end(
+                        fragment, out_end_name, flip_overhang
+                    ),
                 }
             )
     nodes.sort(
@@ -110,18 +119,38 @@ def _candidate_nodes(record_position: int, digest_id: int, fragments) -> list[di
     return nodes
 
 
+def _oriented_end(fragment: dict, end_name: str, flip_overhang: bool) -> dict:
+    """构造节点的朝向端：标识取原片段 left/right，突出端按摆放方向换算。
+
+    反向摆放（片段翻转）时接头处按链向 5'→3' 重新读出突出端，即原
+    序列的 IUPAC 反向互补；``5prime``/``3prime`` 极性不随翻转改变，
+    平端/天然末端无突出端（空串反向互补仍为空串）。
+    """
+    end = fragment[f"{end_name}_end"]
+    overhang = end["overhang"]
+    if flip_overhang:
+        overhang = reverse_complement(overhang)
+    return {
+        "fragment_end": end_name,
+        "end_type": end["type"],
+        "overhang": overhang,
+    }
+
+
 def _node_key(node: dict) -> tuple:
     """节点的稳定择优键：记录请求位置、片段索引、链左端方向（left<right）。"""
     return (node["record_position"], node["fragment_index"], node["direction_rank"])
 
 
-def _end_key(end: dict, node: dict) -> tuple:
-    """末端身份：（记录位置, 片段索引, 原片段端方向 left<right）。"""
-    return (
-        node["record_position"],
-        node["fragment_index"],
-        0 if end["fragment_end"] == "left" else 1,
-    )
+def _end_key(node: dict, end: dict) -> tuple:
+    """朝向端身份：节点身份 + 入/出侧（0=入端, 1=出端）。
+
+    同一原片段端会同时出现在正向节点的一侧与反向节点的另一侧，且反向
+    节点上其突出端序列经过反向互补换算，因此身份键必须带节点与侧别，
+    不能只按（记录, 片段, 原片段端方向）标识。
+    """
+    side = 0 if end is node["in_end"] else 1
+    return (_node_key(node), side)
 
 
 def plan_assembly_chain(records, include_blunt: bool, max_chain_length: int) -> dict:
@@ -149,8 +178,8 @@ def plan_assembly_chain(records, include_blunt: bool, max_chain_length: int) -> 
     # 末端身份 -> 末端内容；记忆化状态只传身份键，避免字典不可哈希
     ends: dict[tuple, dict] = {}
     for node in all_nodes:
-        ends[_end_key(node["in_end"], node)] = node["in_end"]
-        ends[_end_key(node["out_end"], node)] = node["out_end"]
+        ends[_end_key(node, node["in_end"])] = node["in_end"]
+        ends[_end_key(node, node["out_end"])] = node["out_end"]
 
     def compatible(out_key: tuple, candidate_in_end: dict) -> bool:
         return match_ends(ends[out_key], candidate_in_end, include_blunt) is not None
@@ -177,7 +206,7 @@ def plan_assembly_chain(records, include_blunt: bool, max_chain_length: int) -> 
                     continue
                 key = _node_key(node)
                 suffix = best_suffix(
-                    _end_key(node["out_end"], node),
+                    _end_key(node, node["out_end"]),
                     unused_positions - {position},
                     slots - 1,
                 )
@@ -203,7 +232,7 @@ def plan_assembly_chain(records, include_blunt: bool, max_chain_length: int) -> 
     for position in range(record_count):
         for node in nodes_by_record[position]:
             suffix = best_suffix(
-                _end_key(node["out_end"], node),
+                _end_key(node, node["out_end"]),
                 all_positions - {position},
                 max_chain_length - 1,
             )

@@ -102,40 +102,43 @@ def test_sticky_chain_uses_bridge_fragment_and_all_three_records(client):
     assert data["connection_count"] == 2
     a, b, c = rec5["id"], bridge["id"], rec3["id"]
 
-    # 链：rec5 f0 正向(右5'AAGT) -> bridge f1 反向(入端=原右端3'ACTT；
-    #     出端=原左端5'AAGT) -> rec3 f0 反向(入端=原右端3'ACTT，
-    #     择优键 f0/reverse 小于 f1/forward)
+    # 链：rec5 f1 反向(入端=原右端 none；出端=原左端5'AAGT→换算 ACTT)
+    #     -> bridge f1 反向(入端=原右端3'ACTT→换算 AAGT；
+    #        出端=原左端5'AAGT→换算 ACTT)
+    #     -> rec3 f0 反向(入端=原右端3'ACTT→换算 AAGT；出端=原左端 none)
+    # 反向节点的朝向端突出端为原序列的反向互补，极性保持 5'/3' 不变：
+    # ACTT(5') 与 AAGT(3') 满足 5'==revcomp(3') 方可连。
     assert data["nodes"] == [
         {
-            "digest_id": a, "fragment_index": 0, "orientation": "forward",
-            "left_end": _end(a, 0, "left", "none", ""),
-            "right_end": _end(a, 0, "right", "5prime", "AAGT"),
+            "digest_id": a, "fragment_index": 1, "orientation": "reverse",
+            "left_end": _end(a, 1, "right", "none", ""),
+            "right_end": _end(a, 1, "left", "5prime", "ACTT"),
         },
         {
             "digest_id": b, "fragment_index": 1, "orientation": "reverse",
-            "left_end": _end(b, 1, "right", "3prime", "ACTT"),
-            "right_end": _end(b, 1, "left", "5prime", "AAGT"),
+            "left_end": _end(b, 1, "right", "3prime", "AAGT"),
+            "right_end": _end(b, 1, "left", "5prime", "ACTT"),
         },
         {
             "digest_id": c, "fragment_index": 0, "orientation": "reverse",
-            "left_end": _end(c, 0, "right", "3prime", "ACTT"),
+            "left_end": _end(c, 0, "right", "3prime", "AAGT"),
             "right_end": _end(c, 0, "left", "none", ""),
         },
     ]
     assert data["connections"] == [
         {
             "index": 0,
-            "from_end": _end(a, 0, "right", "5prime", "AAGT"),
-            "to_end": _end(b, 1, "right", "3prime", "ACTT"),
+            "from_end": _end(a, 1, "left", "5prime", "ACTT"),
+            "to_end": _end(b, 1, "right", "3prime", "AAGT"),
             "compatibility": "sticky",
-            "ligated_overhang": "AAGT",
+            "ligated_overhang": "ACTT",
         },
         {
             "index": 1,
-            "from_end": _end(b, 1, "left", "5prime", "AAGT"),
-            "to_end": _end(c, 0, "right", "3prime", "ACTT"),
+            "from_end": _end(b, 1, "left", "5prime", "ACTT"),
+            "to_end": _end(c, 0, "right", "3prime", "AAGT"),
             "compatibility": "sticky",
-            "ligated_overhang": "AAGT",
+            "ligated_overhang": "ACTT",
         },
     ]
     assert data["used_digest_ids"] == [a, b, c]
@@ -148,13 +151,13 @@ def test_simple_two_record_sticky_chain_orientation(client):
     rec5 = _create_five_prime(client)
     rec3 = _create_three_prime(client)
     data = _plan(client, [rec5["id"], rec3["id"]]).json()
-    # 字典序最小的可行链：rec5 f0 forward -> rec3 f1 forward？
-    # rec3 入端兼容点：f0 right(3') 需反向摆入(reverse，链左=原右端)；
-    # f1 left(3') 正向摆入(forward，direction_rank 0)。
-    # 择优键 (record, fragment, rank)：f0 reverse=(..,0,1) < f1 forward=(..,1,0)
+    # 字典序最小的可行链：rec5 f0 forward -> rec3 f1 forward。
+    # rec3 f0 reverse 的入端是原右端 3'ACTT 换算后的 AAGT(3')，与
+    # 5'AAGT 不兼容（5'==revcomp(3')? AAGT != ACTT）；f1 forward
+    # 入端即原左端 3'ACTT，5'AAGT == revcomp(ACTT) 兼容。
     assert [(n["digest_id"], n["fragment_index"], n["orientation"]) for n in data["nodes"]] == [
         (rec5["id"], 0, "forward"),
-        (rec3["id"], 0, "reverse"),
+        (rec3["id"], 1, "forward"),
     ]
     assert data["connection_count"] == 1
     assert data["connections"][0]["compatibility"] == "sticky"
@@ -176,10 +179,11 @@ def test_reverse_request_order_flips_chain_records(client):
     assert first["orientation"] == "forward"
     assert first["left_end"]["end_type"] == "none"
     assert first["right_end"]["end_type"] == "3prime"
-    # 次节点最小键：rec5 f0 reverse（入端=right(5')、出端=left(none)）
+    # 次节点最小键：rec5 f1 forward（入端=left(5')；f0 reverse 的入端为
+    # 原右端 5'AAGT 换算后的 TGAA(5')，与 3'ACTT 不兼容）
     second = data["nodes"][1]
-    assert second["fragment_index"] == 0
-    assert second["orientation"] == "reverse"
+    assert second["fragment_index"] == 1
+    assert second["orientation"] == "forward"
     assert data["connections"][0]["from_end"]["end_type"] == "3prime"
     assert data["connections"][0]["to_end"]["end_type"] == "5prime"
 
@@ -196,6 +200,106 @@ def test_non_compatible_sticky_overhangs_yield_empty_chain(client):
     assert data["used_digest_ids"] == []
     assert data["unused_digest_ids"] == [rec_a["id"], rec_b["id"]]
     assert data["stop_reason"] == "no_compatible_ends"
+
+
+def _single_right_end_record(digest_id, end_type, overhang):
+    """合成"只有右端可连接"的单片段记录（左端为天然末端）。"""
+    return {
+        "digest_id": digest_id,
+        "fragments": [
+            {
+                "index": 0,
+                "left_end": {"type": "none", "overhang": ""},
+                "right_end": {"type": end_type, "overhang": overhang},
+            }
+        ],
+    }
+
+
+def test_reversed_right_end_5a_vs_3t_does_not_assemble(client):
+    # 反向节点突出端必须反向互补换算：两条"只有右端"的记录，
+    # 5'-A 与 3'-T 在旧逻辑（仅交换 left/right）下被误判兼容
+    # （A == revcomp(T)）；换算后反向节点入端为 3'-revcomp(T)=A，
+    # A != revcomp(A)=T，不成链。
+    records = [
+        _single_right_end_record(1, "5prime", "A"),
+        _single_right_end_record(2, "3prime", "T"),
+    ]
+    plan = plan_assembly_chain(records, include_blunt=True, max_chain_length=8)
+    assert plan["nodes"] == []
+    assert plan["connections"] == []
+    assert plan["stop_reason"] == "no_compatible_ends"
+
+
+def test_reversed_right_end_5a_vs_3a_assembles_with_converted_overhang(client):
+    # 同一对朝向（两条"只有右端"的记录）：5'-A 与 3'-A 在旧逻辑下漏报
+    # （A != revcomp(A)=T）；换算后反向节点入端为 3'-revcomp(A)=T，
+    # 5'-A == revcomp(T)=A，恰可连接。
+    records = [
+        _single_right_end_record(1, "5prime", "A"),
+        _single_right_end_record(2, "3prime", "A"),
+    ]
+    plan = plan_assembly_chain(records, include_blunt=True, max_chain_length=8)
+    assert len(plan["nodes"]) == 2
+    first, second = plan["nodes"]
+    # 首节点正向：出端即原右端 5'-A
+    assert (first["fragment_index"], first["orientation"]) == (0, "forward")
+    # 次节点反向摆入：入端标识仍为原片段右端，突出端为换算后的 3'-T
+    assert (second["fragment_index"], second["orientation"]) == (0, "reverse")
+    assert plan["connections"] == [
+        {
+            "index": 0,
+            "from_end": _end(1, 0, "right", "5prime", "A"),
+            "to_end": _end(2, 0, "right", "3prime", "T"),
+            "compatibility": "sticky",
+            "ligated_overhang": "A",
+        }
+    ]
+    # 对外节点端点同样使用换算后的朝向端，端标识保留原片段 right
+    from app.assembly import public_node
+    assert public_node(first)["right_end"] == _end(1, 0, "right", "5prime", "A")
+    assert public_node(second)["left_end"] == _end(2, 0, "right", "3prime", "T")
+    assert public_node(second)["right_end"] == _end(2, 0, "left", "none", "")
+
+
+def test_reversed_overhang_conversion_uses_iupac_complement(client):
+    # 简并碱基同样按 IUPAC 表换算：反向节点 3'-R 的入端换算为 3'-Y
+    # （COMPLEMENT[R]=Y），与 5'-R 兼容（R == revcomp(Y)=R）；
+    # 旧逻辑直接拿 3'-R 比较，R != revcomp(R)=Y 会漏报。
+    records = [
+        _single_right_end_record(1, "5prime", "R"),
+        _single_right_end_record(2, "3prime", "R"),
+    ]
+    plan = plan_assembly_chain(records, include_blunt=True, max_chain_length=8)
+    assert len(plan["nodes"]) == 2
+    assert plan["connections"][0]["from_end"] == _end(1, 0, "right", "5prime", "R")
+    assert plan["connections"][0]["to_end"] == _end(2, 0, "right", "3prime", "Y")
+    assert plan["connections"][0]["ligated_overhang"] == "R"
+
+
+def test_forward_nodes_keep_original_overhangs(client):
+    # 正向节点不换算：5'-AAGT 正向出端与原右端 3'-ACTT 正向入端
+    # （AAGT == revcomp(ACTT)）照常兼容，回显突出端为原始序列。
+    records = [
+        _single_right_end_record(1, "5prime", "AAGT"),
+        {
+            "digest_id": 2,
+            "fragments": [
+                {
+                    "index": 0,
+                    "left_end": {"type": "3prime", "overhang": "ACTT"},
+                    "right_end": {"type": "none", "overhang": ""},
+                }
+            ],
+        },
+    ]
+    plan = plan_assembly_chain(records, include_blunt=True, max_chain_length=8)
+    assert [(n["fragment_index"], n["orientation"]) for n in plan["nodes"]] == [
+        (0, "forward"), (0, "forward"),
+    ]
+    assert plan["connections"][0]["from_end"] == _end(1, 0, "right", "5prime", "AAGT")
+    assert plan["connections"][0]["to_end"] == _end(2, 0, "left", "3prime", "ACTT")
+
 
 
 def test_uncut_record_does_not_participate(client):

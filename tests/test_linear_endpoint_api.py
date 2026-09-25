@@ -199,22 +199,26 @@ def test_prefix_record_assembly_uses_repaired_end(prefix_client):
     )
     assert resp.status_code == 200
     data = resp.json()
-    # 校正后的 5prime(A) 端使两条记录拼接成链；修复前只能报 no_compatible_ends
+    # 校正后的 5prime(A) 端使两条记录拼接成链；修复前只能报 no_compatible_ends。
+    # 两条记录都是 f0：sid 反向摆入（出端=原左端 5'(A)，换算为 5'(T)），
+    # rec3 反向摆入（入端=原右端 3'(T)，按 IUPAC 反向互补换算为 3'(A)）：
+    # 5'(T) == revcomp(3'(A))，端标识仍标明各自原片段端。
     assert data["node_count"] == 2
     assert data["connection_count"] == 1
     assert data["used_digest_ids"] == [sid, rec3["id"]]
     assert data["stop_reason"] == "all_records_used"
+    assert [n["orientation"] for n in data["nodes"]] == ["reverse", "reverse"]
     connection = data["connections"][0]
     assert connection["from_end"] == {
         "digest_id": sid, "fragment_index": 0, "end": "left",
-        "end_type": "5prime", "overhang": "A",
+        "end_type": "5prime", "overhang": "T",
     }
     assert connection["to_end"] == {
         "digest_id": rec3["id"], "fragment_index": 0, "end": "right",
-        "end_type": "3prime", "overhang": "T",
+        "end_type": "3prime", "overhang": "A",
     }
     assert connection["compatibility"] == "sticky"
-    assert connection["ligated_overhang"] == "A"
+    assert connection["ligated_overhang"] == "T"
 
 
 def test_circular_record_not_repaired(tmp_path, monkeypatch):
