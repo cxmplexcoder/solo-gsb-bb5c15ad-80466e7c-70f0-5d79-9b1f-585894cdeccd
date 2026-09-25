@@ -917,6 +917,12 @@ curl -X POST http://localhost:8000/ligation-compatibility \
 连边（仅跨记录连边），在图上搜索**节点数最多的简单路径**。**规划过程不写库**：
 原记录保持不变，也不会产生新的提交。
 
+> **翻转时突出端按 IUPAC 反向互补换算**：5'/3' 突出是末端的物理属性，
+> 翻转片段不改变突出端类型，但末端朝向反过来后，其黏端序列要先按 IUPAC
+> 规则取**反向互补**再送兼容判定（平端与天然末端 `none` 不受影响）；正向
+> 摆入的末端类型与序列完全不变。回显中 `end` 仍标明该端取自**原片段**的
+> `left` / `right`，而 `overhang` 是翻转换算后的链上序列。
+
 ### 请求
 
 ```bash
@@ -946,9 +952,11 @@ curl -X POST http://localhost:8000/ligation-assembly \
 
 ### 响应
 
-以下示例为三条记录：`id=1` 单切口产生 5' 突出端 `AAGT`（f0 右端）；`id=2`
-含两个切口，中间片段 f1 左端为 5' `AAGT`、右端为 3' `ACTT`，可作桥接；
-`id=3` 单切口产生 3' 突出端 `ACTT`（与 5' `AAGT` 反向互补）：
+以下示例为三条记录：`id=1` 单切口产生 5' 突出端 `AAGT`（f0 右端 / f1 左端）；
+`id=2` 含两个切口，中间片段 f1 左端为 5' `AAGT`、右端为 3' `ACTT`，可作桥接；
+`id=3` 单切口产生 3' 突出端 `ACTT`（与 5' `AAGT` 反向互补）。三个片段均
+**翻转摆入**：此时各朝内的黏端按 IUPAC 反向互补换算（5' `AAGT`→5' `ACTT`、
+3' `ACTT`→3' `AAGT`），换算后的 5' `ACTT` 与 3' `AAGT` 恰好互补：
 
 ```json
 {
@@ -959,35 +967,35 @@ curl -X POST http://localhost:8000/ligation-assembly \
   "node_count": 3,
   "connection_count": 2,
   "nodes": [
-    {"digest_id": 1, "fragment_index": 0, "orientation": "forward",
-     "left_end":  {"digest_id": 1, "fragment_index": 0, "end": "left",
+    {"digest_id": 1, "fragment_index": 1, "orientation": "reverse",
+     "left_end":  {"digest_id": 1, "fragment_index": 1, "end": "right",
                    "end_type": "none", "overhang": ""},
-     "right_end": {"digest_id": 1, "fragment_index": 0, "end": "right",
-                   "end_type": "5prime", "overhang": "AAGT"}},
+     "right_end": {"digest_id": 1, "fragment_index": 1, "end": "left",
+                   "end_type": "5prime", "overhang": "ACTT"}},
     {"digest_id": 2, "fragment_index": 1, "orientation": "reverse",
      "left_end":  {"digest_id": 2, "fragment_index": 1, "end": "right",
-                   "end_type": "3prime", "overhang": "ACTT"},
+                   "end_type": "3prime", "overhang": "AAGT"},
      "right_end": {"digest_id": 2, "fragment_index": 1, "end": "left",
-                   "end_type": "5prime", "overhang": "AAGT"}},
+                   "end_type": "5prime", "overhang": "ACTT"}},
     {"digest_id": 3, "fragment_index": 0, "orientation": "reverse",
      "left_end":  {"digest_id": 3, "fragment_index": 0, "end": "right",
-                   "end_type": "3prime", "overhang": "ACTT"},
+                   "end_type": "3prime", "overhang": "AAGT"},
      "right_end": {"digest_id": 3, "fragment_index": 0, "end": "left",
                    "end_type": "none", "overhang": ""}}
   ],
   "connections": [
     {"index": 0,
-     "from_end": {"digest_id": 1, "fragment_index": 0, "end": "right",
-                  "end_type": "5prime", "overhang": "AAGT"},
+     "from_end": {"digest_id": 1, "fragment_index": 1, "end": "left",
+                  "end_type": "5prime", "overhang": "ACTT"},
      "to_end":   {"digest_id": 2, "fragment_index": 1, "end": "right",
-                  "end_type": "3prime", "overhang": "ACTT"},
-     "compatibility": "sticky", "ligated_overhang": "AAGT"},
+                  "end_type": "3prime", "overhang": "AAGT"},
+     "compatibility": "sticky", "ligated_overhang": "ACTT"},
     {"index": 1,
      "from_end": {"digest_id": 2, "fragment_index": 1, "end": "left",
-                  "end_type": "5prime", "overhang": "AAGT"},
+                  "end_type": "5prime", "overhang": "ACTT"},
      "to_end":   {"digest_id": 3, "fragment_index": 0, "end": "right",
-                  "end_type": "3prime", "overhang": "ACTT"},
-     "compatibility": "sticky", "ligated_overhang": "AAGT"}
+                  "end_type": "3prime", "overhang": "AAGT"},
+     "compatibility": "sticky", "ligated_overhang": "ACTT"}
   ],
   "used_digest_ids": [1, 2, 3],
   "unused_digest_ids": [],
@@ -1002,7 +1010,10 @@ curl -X POST http://localhost:8000/ligation-assembly \
     （翻转摆入）；
   - `left_end` / `right_end` 为该节点在**拼接链上**的左/右端点，其中 `end`
     标明该端取自**原片段**的 `left` 还是 `right`（翻转时二者相反）；天然末端
-    `none` 只可能出现在整条链的两个最外端。
+    `none` 只可能出现在整条链的两个最外端；
+  - `end_type` / `overhang` 为该摆向下参与兼容判定的末端：正向节点与原
+    片段完全一致，翻转节点的黏端 `overhang` 是原序列的 IUPAC 反向互补
+    （`end_type` 物理属性不变）。
 - `connections[]`：相邻节点间的连接，`index` 从 0 起；`from_end` 恒为左侧
   节点的出端、`to_end` 恒为右侧节点的入端，二者来自不同记录；
   `compatibility` / `ligated_overhang` 的含义与 `/ligation-compatibility`
